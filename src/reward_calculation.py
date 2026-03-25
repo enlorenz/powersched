@@ -72,6 +72,8 @@ class RewardCalculator:
     NEGATIVE_PRICE_OVERDRIVE_MAX_REWARD = 1.5
     # Drop penalty: tanh saturation curve. TAU=20: 1 drop≈-0.05, 10 drops≈-0.46, 50 drops≈-1.0.
     DROP_PENALTY_TAU = 20.0
+    
+    ALLOW_DROP_PENALTY = True  # whether to include penalties for dropped jobs in the reward calculation
 
 
     ALLOW_DROP_PENALTY = True  # whether to include penalties for dropped jobs in the reward calculation
