@@ -51,12 +51,15 @@ class RewardCalculator:
     EFFICIENCY_TARGET_RATIO = 0.70
     EFFICIENCY_GAIN = 5.0
     # Faster response so price signal reacts on the same horizon as scheduling actions.
-    PRICE_ADVANTAGE_GAIN = 1.0
+    # Keep the cheap-side incentive moderate, but make the expensive-side penalty hit
+    # near -1 already for medium useful-work volumes.
+    PRICE_ADVANTAGE_GAIN_POS = 3.0
+    PRICE_ADVANTAGE_GAIN_NEG = 3.0
     PRICE_QUANTILE_LOW = 0.10
     PRICE_QUANTILE_HIGH = 0.90
-    PRICE_NODE_TAU_POS = 40.0
-    PRICE_NODE_TAU_NEG = 40.0
-    NEGATIVE_PRICE_NODE_TAU = 30.0  # fast node saturation only for negative-price overdrive
+    PRICE_NODE_TAU_POS = 20.0
+    PRICE_NODE_TAU_NEG = 20.0
+    NEGATIVE_PRICE_NODE_TAU = 20.0  # fast node saturation only for negative-price overdrive
     NEGATIVE_PRICE_TAU = 8.0
     NEGATIVE_PRICE_OVERDRIVE_GAIN = 2.5
     NEGATIVE_PRICE_OVERDRIVE_FLOOR = 0.35
@@ -171,6 +174,16 @@ class RewardCalculator:
         expensive_strength = float(np.clip(normalized, 0.0, 1.0))
         return cheap_strength, expensive_strength
 
+    def _price_advantage_component(self, relative_advantage: float) -> float:
+        """Asymmetric gain: harsher on expensive hours than on cheap-hour rewards."""
+        gain = self.PRICE_ADVANTAGE_GAIN_POS if relative_advantage >= 0.0 else self.PRICE_ADVANTAGE_GAIN_NEG
+        return gain * relative_advantage
+
+    def _price_load_component(self, activity_units: float, relative_advantage: float) -> float:
+        """Saturate expensive-hour penalties faster than cheap-hour rewards."""
+        tau = self.PRICE_NODE_TAU_POS if relative_advantage >= 0.0 else self.PRICE_NODE_TAU_NEG
+        return float(1.0 - np.exp(-activity_units / tau))
+
     def _reward_price_legacy(self, current_price: float, average_future_price: float, num_processed_jobs: int) -> float:
         """Legacy linear reward: preserved for comparison/ablation."""
         context_avg = self._price_context_average(average_future_price)
@@ -199,9 +212,8 @@ class RewardCalculator:
         price_span = max(self.prices.MAX_PRICE - self.prices.MIN_PRICE, 1e-6)
         relative_advantage = (context_avg - current_price) / price_span
 
-        advantage_component = self.PRICE_ADVANTAGE_GAIN * relative_advantage
-        tau = self.PRICE_NODE_TAU_POS if advantage_component >= 0.0 else self.PRICE_NODE_TAU_NEG
-        node_component = 1.0 - np.exp(-num_used_nodes / tau)
+        advantage_component = self._price_advantage_component(relative_advantage)
+        node_component = self._price_load_component(num_used_nodes, relative_advantage)
         raw_reward = advantage_component * node_component
 
         if current_price < 0.0:
@@ -287,10 +299,9 @@ class RewardCalculator:
         price_span = max(self.prices.MAX_PRICE - self.prices.MIN_PRICE, 1e-6)
         relative_advantage = (context_avg - current_price) / price_span
 
-        advantage_component = self.PRICE_ADVANTAGE_GAIN * relative_advantage
         equivalent_used_nodes = used_cores / float(CORES_PER_NODE)
-        tau = self.PRICE_NODE_TAU_POS if advantage_component >= 0.0 else self.PRICE_NODE_TAU_NEG
-        load_component = 1.0 - np.exp(-equivalent_used_nodes / tau)
+        advantage_component = self._price_advantage_component(relative_advantage)
+        load_component = self._price_load_component(equivalent_used_nodes, relative_advantage)
         raw_reward = advantage_component * load_component
 
         if current_price < 0.0:
@@ -328,9 +339,8 @@ class RewardCalculator:
         cheap_strength, expensive_strength = self._price_phase_strengths(current_price)
         if cheap_strength > 0.0 or expensive_strength > 0.0:
             relative_advantage = cheap_strength - expensive_strength
-            advantage_component = self.PRICE_ADVANTAGE_GAIN * relative_advantage
-            tau = self.PRICE_NODE_TAU_POS if advantage_component >= 0.0 else self.PRICE_NODE_TAU_NEG
-            load_component = 1.0 - np.exp(-equivalent_used_nodes / tau)
+            advantage_component = self._price_advantage_component(relative_advantage)
+            load_component = self._price_load_component(equivalent_used_nodes, relative_advantage)
             raw_reward = advantage_component * load_component
 
         if current_price < 0.0:
