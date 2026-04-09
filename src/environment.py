@@ -680,6 +680,8 @@ class ComputeClusterEnv(gym.Env):
             self.consecutive_drop_steps += 1
         else:
             self.consecutive_drop_steps = 0
+        if self.consecutive_drop_steps > self.metrics.episode_max_drop_streak:
+            self.metrics.episode_max_drop_streak = self.consecutive_drop_steps
         if (
             self.flush_after_drop_streak > 0
             and self.consecutive_drop_steps >= self.flush_after_drop_streak
