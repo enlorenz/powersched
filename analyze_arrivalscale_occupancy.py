@@ -60,7 +60,7 @@ EPISODE_RE = re.compile(
     r"(?P<baseline_off_cost_1k>-?[\d,]+(?:\.\d+)?|n/a)\s*€/1k.*?"
     r"Jobs=[\d,]+\/[\d,]+\s+\((?P<completion_rate>-?[\d.]+)%\),\s*"
     r"AvgWait=(?P<avg_wait>-?[\d.]+)h,.*?"
-    r"Dropped=(?P<agent_dropped>-?[\d,]+),.*?"
+    r"(?:Dropped|Lost)=(?P<agent_dropped>-?[\d,]+),.*?"
     r"Agent Occupancy \(Nodes\)=\s*(?P<occupancy>-?[\d.]+)%,\s*"
     r"Baseline Occupancy \(Nodes\)=\s*(?P<baseline_occupancy>-?[\d.]+)%"
     r"(?:.*?"
@@ -81,11 +81,11 @@ ARRIVALS_SUMMARY_RE = re.compile(
 )
 
 DROPPED_AGENT_SUMMARY_RE = re.compile(
-    r"Total Dropped Jobs \(Agent\):\s*(?P<agent>[\d,]+)"
+    r"Total (?:Dropped|Lost) Jobs \(Agent\):\s*(?P<agent>[\d,]+)"
 )
 
 DROPPED_BASELINE_SUMMARY_RE = re.compile(
-    r"Total Dropped Jobs \(Baseline\):\s*(?P<baseline>[\d,]+)"
+    r"Total (?:Dropped|Lost) Jobs \(Baseline\):\s*(?P<baseline>[\d,]+)"
 )
 
 
@@ -245,7 +245,7 @@ def parse_episode_metrics(
         raise RuntimeError(
             "Could not parse episode metrics from train.py output. "
             "Expected lines like 'Episode X: ... Savings=€.../€..., Power=..., CostPer1kCompleted=..., "
-            "Agent Occupancy (Nodes)=...%, PropPower=..., PropSavings=€.../€...'."
+            "(Lost|Dropped)=..., Agent Occupancy (Nodes)=...%'."
         )
 
     return (
