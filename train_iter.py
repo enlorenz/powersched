@@ -370,10 +370,10 @@ def run_all_parallel(combinations, max_parallel, iter_limit_per_step, session, p
                      job_durations, jobs, hourly_jobs, job_arrival_scale, jobs_exact_replay,
                      plot_dashboard, dashboard_hours,
                      seeds, seed_sweep, evaluate_savings, eval_months, flush_after_drop_streak, workloadgen_args,
-                     no_tui=False):
+                     no_tui=False, output_dir="sessions"):
     multi_seed = len(seeds) > 1
     current_env = os.environ.copy()
-    log_dir = make_log_dir(session, output_dir or "sessions")
+    log_dir = make_log_dir(session, output_dir)
     tasks = list(itertools.product(combinations, seeds))
 
     def launch(combo, seed):
@@ -387,6 +387,7 @@ def run_all_parallel(combinations, max_parallel, iter_limit_per_step, session, p
             job_arrival_scale, jobs_exact_replay,
             plot_dashboard, dashboard_hours, seed, seed_sweep,
             evaluate_savings, eval_months, flush_after_drop_streak, workloadgen_args,
+            output_dir,
         )
         log_path = os.path.join(log_dir, label_to_filename(label))
         log_fh = open(log_path, "w")
@@ -455,7 +456,13 @@ def main():
     add_workloadgen_args(parser)
 
     parser.add_argument("--session", help="Session ID")
-    parser.add_argument("--output-dir", default=None, help="Base directory for all output (models, logs, plots). Defaults to 'sessions'.")
+    parser.add_argument(
+        "--output-dir",
+        "--output_dir",
+        dest="output_dir",
+        default="sessions",
+        help="Base directory for all output (models, logs, plots). Defaults to 'sessions'.",
+    )
 
     args = parser.parse_args()
 
