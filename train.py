@@ -306,15 +306,17 @@ def main():
             print("Train a model first, then run evaluation mode.")
             return
 
+        num_episodes = args.eval_months * 2 # 2 episodes per month
+        if args.eval_months == 12:
+            num_episodes = 26 # 26 episodes for full year, correct for 52 weeks / 2 weeks per episode        
         print(f"=== EVALUATION MODE ===")
-        print(f"Evaluation period: {args.eval_months} months ({args.eval_months * 2} episodes, Each episode = 2 weeks)")
+        print(f"Evaluation period: {args.eval_months} months ({num_episodes} episodes, Each episode = 2 weeks)")
         if evaluation_plots_dir is None:
             raise RuntimeError("Evaluation plots directory could not be determined for the selected model.")
         os.makedirs(evaluation_plots_dir, exist_ok=True)
         env.plots_dir = f"{evaluation_plots_dir}/"
         print(f"Evaluation plots directory: {evaluation_plots_dir}")
 
-        num_episodes = args.eval_months * 2 # 2 episodes per month
         for episode in range(num_episodes):
             obs, _ = env.reset()
             episode_reward = 0
