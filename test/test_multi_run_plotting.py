@@ -149,6 +149,25 @@ class MultiRunPlottingTests(unittest.TestCase):
         np.testing.assert_allclose(errorbar.call_args.kwargs["yerr"], [0.003, 0.004])
         self.assertNotIn("xerr", errorbar.call_args.kwargs)
 
+    def test_wait_panel_shows_mean_p95_and_slowest_five_percent_mean(self):
+        rows = pd.DataFrame({
+            "arrivals": [100.0, 200.0],
+            "mean_wait_h": [1.0, 2.0], "mean_wait_h_std_total": [0.1, 0.2],
+            "p95_wait_h": [4.0, 8.0], "p95_wait_h_std_total": [0.4, 0.8],
+            "tail_mean_wait_h": [6.0, 12.0], "tail_mean_wait_h_std_total": [0.6, 1.2],
+        })
+        fig, ax = plt.subplots()
+        self.addCleanup(plt.close, fig)
+        plot = self.module["plot_mean_wait"]
+        model = self.module["MODELS"][0]
+        with patch.dict(plot.__globals__, {"df": rows, "mrow": lambda model: rows, "MODELS": [model]}):
+            plot(ax)
+        curves = [line for line in ax.lines if line.get_label().startswith(model + ":")]
+        self.assertEqual([line.get_label() for line in curves],
+                         [f"{model}: Mean", f"{model}: P95", f"{model}: Slowest 5% mean"])
+        np.testing.assert_allclose([line.get_ydata() for line in curves], [[1, 2], [4, 8], [6, 12]])
+        self.assertEqual(len([item for item in ax.containers if isinstance(item, ErrorbarContainer)]), 3)
+
     def test_dropped_job_whiskers_stop_at_zero_without_changing_values(self):
         rows = pd.DataFrame({"arrivals": [100.0, 200.0, 300.0],
                              "dropped_jobs": [0.0, 2.0, 10.0],

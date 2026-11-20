@@ -190,6 +190,28 @@ def parse_wait_summary(stdout: str) -> tuple[float | None, float | None]:
     return _to_float(match.group("agent_wait")), _to_float(match.group("baseline_wait"))
 
 
+def parse_wait_tail_summary(stdout: str) -> dict[str, float]:
+    """Read pooled run tails; episode percentiles cannot reconstruct these values."""
+    values = {
+        f"{side}_{metric}_hours": float("nan")
+        for side in ("agent", "baseline")
+        for metric in ("p95_wait", "tail_mean_wait")
+    }
+    _, separator, summary = stdout.partition("=== JOB PROCESSING METRICS ===")
+    if not separator:
+        return values
+    sections = re.split(r"(?m)^(Agent|Baseline):[ \t]*$", summary)
+    for side, body in zip(sections[1::2], sections[2::2]):
+        for metric, label in (
+            ("p95_wait", "P95 Wait Time"),
+            ("tail_mean_wait", "Slowest 5% Mean Wait Time"),
+        ):
+            match = re.search(rf"{re.escape(label)}:\s*(-?[\d.]+|n/a|nan)\s*hours", body)
+            if match:
+                values[f"{side.lower()}_{metric}_hours"] = _to_float_or_nan(match[1])
+    return values
+
+
 def parse_arrivals_summary(stdout: str) -> tuple[float | None, float | None]:
     match = ARRIVALS_SUMMARY_RE.search(stdout)
     if not match:
@@ -275,8 +297,14 @@ class RunStats:
     completion_rate_mean: float
     completion_rate_std: float
     agent_avg_wait_hours: float
+    agent_p95_wait_hours: float = field(default=float("nan"), kw_only=True)
+    agent_tail_mean_wait_hours: float = field(default=float("nan"), kw_only=True)
     baseline_avg_wait_hours: float
+    baseline_p95_wait_hours: float = field(default=float("nan"), kw_only=True)
+    baseline_tail_mean_wait_hours: float = field(default=float("nan"), kw_only=True)
     wait_delta_hours: float
+    p95_wait_delta_hours: float = field(default=float("nan"), kw_only=True)
+    tail_mean_wait_delta_hours: float = field(default=float("nan"), kw_only=True)
     effective_savings_mean: float
     effective_savings_std: float
     effective_savings_off_mean: float
@@ -354,6 +382,10 @@ def make_run_stats(
     arrivals_per_hour_std: float,
     dropped_jobs_agent_total: float,
     dropped_jobs_baseline_total: float,
+    agent_p95_wait_hours: float = float("nan"),
+    agent_tail_mean_wait_hours: float = float("nan"),
+    baseline_p95_wait_hours: float = float("nan"),
+    baseline_tail_mean_wait_hours: float = float("nan"),
 ) -> RunStats:
     wait_delta_hours = agent_avg_wait_hours - baseline_avg_wait_hours
     effective_savings = safe_divide(savings * (completion_rate / 100) ** 2, wait_delta_hours + 1)
@@ -420,8 +452,14 @@ def make_run_stats(
         completion_rate_mean=float(np.mean(completion_rate)),
         completion_rate_std=float(np.std(completion_rate)),
         agent_avg_wait_hours=float(agent_avg_wait_hours),
+        agent_p95_wait_hours=float(agent_p95_wait_hours),
+        agent_tail_mean_wait_hours=float(agent_tail_mean_wait_hours),
         baseline_avg_wait_hours=float(baseline_avg_wait_hours),
+        baseline_p95_wait_hours=float(baseline_p95_wait_hours),
+        baseline_tail_mean_wait_hours=float(baseline_tail_mean_wait_hours),
         wait_delta_hours=float(wait_delta_hours),
+        p95_wait_delta_hours=float(agent_p95_wait_hours - baseline_p95_wait_hours),
+        tail_mean_wait_delta_hours=float(agent_tail_mean_wait_hours - baseline_tail_mean_wait_hours),
         effective_savings_mean=effective_savings_mean,
         effective_savings_std=effective_savings_std,
         effective_savings_off_mean=effective_savings_off_mean,
@@ -568,6 +606,31 @@ def maybe_plot_fit(ax: plt.Axes, x: np.ndarray, y: np.ndarray, fit: bool) -> Non
     ax.legend()
 
 
+def plot_wait_deltas(
+    ax: plt.Axes,
+    stats: list[RunStats],
+    occupancy: np.ndarray,
+    occupancy_std: np.ndarray,
+    colors: np.ndarray,
+    fit: bool,
+) -> None:
+    """Compare run-level wait statistics in hours without changing mean-based scores."""
+    for attribute, marker, label in (
+        ("wait_delta_hours", "o", "Mean"),
+        ("p95_wait_delta_hours", "s", "P95"),
+        ("tail_mean_wait_delta_hours", "^", "Slowest 5% mean"),
+    ):
+        values = np.asarray([getattr(s, attribute) for s in stats], dtype=float)
+        if not np.isfinite(values).any():
+            continue
+        for i, (x, y, color) in enumerate(zip(occupancy, values, colors)):
+            if np.isfinite(x) and np.isfinite(y):
+                draw_point(ax, x, y, color, marker=marker, xerr_std=error_at(occupancy_std, i))
+        ax.scatter([], [], marker=marker, color="black", label=label)
+        maybe_plot_fit(ax, occupancy, values, fit)
+    ax.legend()
+
+
 # ── CSV helpers ───────────────────────────────────────────────────────────────
 
 CSV_COMMON_FIELDNAMES: list[str] = [
@@ -586,8 +649,14 @@ CSV_COMMON_FIELDNAMES: list[str] = [
     "completion_rate_mean_pct",
     "completion_rate_std_pct",
     "agent_avg_wait_hours",
+    "agent_p95_wait_hours",
+    "agent_tail_mean_wait_hours",
     "baseline_avg_wait_hours",
+    "baseline_p95_wait_hours",
+    "baseline_tail_mean_wait_hours",
     "wait_delta_hours",
+    "p95_wait_delta_hours",
+    "tail_mean_wait_delta_hours",
     "savings_mean_eur",
     "savings_std_eur",
     "savings_off_mean_eur",
@@ -648,8 +717,14 @@ def csv_common_row(s: RunStats) -> dict[str, object]:
         "completion_rate_mean_pct": f"{s.completion_rate_mean:.6f}",
         "completion_rate_std_pct": f"{s.completion_rate_std:.6f}",
         "agent_avg_wait_hours": f"{s.agent_avg_wait_hours:.6f}",
+        "agent_p95_wait_hours": f"{s.agent_p95_wait_hours:.6f}",
+        "agent_tail_mean_wait_hours": f"{s.agent_tail_mean_wait_hours:.6f}",
         "baseline_avg_wait_hours": f"{s.baseline_avg_wait_hours:.6f}",
+        "baseline_p95_wait_hours": f"{s.baseline_p95_wait_hours:.6f}",
+        "baseline_tail_mean_wait_hours": f"{s.baseline_tail_mean_wait_hours:.6f}",
         "wait_delta_hours": f"{s.wait_delta_hours:.6f}",
+        "p95_wait_delta_hours": f"{s.p95_wait_delta_hours:.6f}",
+        "tail_mean_wait_delta_hours": f"{s.tail_mean_wait_delta_hours:.6f}",
         "savings_mean_eur": f"{s.savings_mean:.6f}",
         "savings_std_eur": f"{s.savings_std:.6f}",
         "savings_off_mean_eur": f"{s.savings_off_mean:.6f}",

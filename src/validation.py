@@ -31,12 +31,14 @@ import json
 import math
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
 
 from src.config import EPISODE_HOURS
+from src.metrics_tracker import MetricsTracker
 
 HISTORY_FILE = "validation.jsonl"
 BEST_FILE = "validation_best.json"
@@ -74,6 +76,20 @@ def entry_feasible(entry: dict, min_completion_ratio: float = 0.0) -> bool:
 def entry_wait(entry: dict) -> float:
     """Average wait at the worst scale (inf if the entry predates wait tracking)."""
     return max(s.get("avg_wait_h", math.inf) for s in entry["scales"].values())
+
+
+def entry_wait_tail_metrics(entry: dict) -> tuple[float, float]:
+    """Tail metrics at the same scale as entry_wait; old histories have no tail metrics."""
+    scale = max(entry["scales"].values(), key=lambda s: s.get("avg_wait_h", math.inf))
+    p95, tail_mean = scale.get("p95_wait_h"), scale.get("tail_mean_wait_h")
+    return (float(p95) if p95 is not None else math.nan,
+            float(tail_mean) if tail_mean is not None else math.nan)
+
+
+def format_wait_tail(p95: float | None, tail_mean: float | None) -> str:
+    def hours(value: float | None) -> str:
+        return f"{value:.1f}h" if value is not None and math.isfinite(value) else "n/a"
+    return f"p95 {hours(p95)}, slowest 5% mean {hours(tail_mean)}"
 
 
 def best_per_budget(history: list[dict], budgets=WAIT_BUDGETS, min_completion_ratio: float = 0.0,
@@ -134,6 +150,7 @@ def run_validation(model, make_env: Callable[[float], object], config: Validatio
                       baseline_jobs_completed=0, jobs_launched=0, jobs_lost=0, baseline_jobs_lost=0,
                       pending_jobs_end=0, overdue_jobs_end=0, episodes=0)
         wait_hours = 0.0  # summed over launched jobs
+        wait_histogram: Counter[int] = Counter()
         for w, start in enumerate(window_starts(n_prices, config.windows)):
             obs, _ = env.reset(seed=config.seed + w, options={"hard_reset": True, "price_start_index": start})
             for episode in range(config.episodes_per_window):
@@ -153,6 +170,8 @@ def run_validation(model, make_env: Callable[[float], object], config: Validatio
                 launched = int(ep.get("jobs_launched", ep["jobs_completed"]))
                 totals["jobs_launched"] += launched
                 wait_hours += float(ep["avg_wait_time"]) * launched
+                # Collect before the next episode/window reset; reused env totals include other runs.
+                wait_histogram.update(env.metrics.episode_job_wait_time_histogram)
                 totals["jobs_lost"] += int(ep.get("jobs_lost_total", ep.get("jobs_dropped", 0)))
                 totals["baseline_jobs_lost"] += int(ep.get("baseline_jobs_lost_total", ep.get("baseline_jobs_dropped", 0)))
                 totals["episodes"] += 1
@@ -160,6 +179,7 @@ def run_validation(model, make_env: Callable[[float], object], config: Validatio
             totals["pending_jobs_end"] += int(ep.get("pending_jobs_end", 0))
             totals["overdue_jobs_end"] += int(ep.get("overdue_jobs_end", 0))
         totals["avg_wait_h"] = wait_hours / totals["jobs_launched"] if totals["jobs_launched"] > 0 else 0.0
+        totals["p95_wait_h"], totals["tail_mean_wait_h"] = MetricsTracker.wait_tail_metrics(wait_histogram)
         base_off = totals["baseline_cost_off"]
         totals["savings_off_pct"] = 100.0 * (base_off - totals["agent_cost"]) / base_off if base_off > 0 else 0.0
         done_base = totals["baseline_jobs_completed"]
@@ -211,6 +231,7 @@ def format_result(step: int, result: dict) -> str:
     parts = [f"Validation at {step:,} steps:"]
     for scale, s in result["scales"].items():
         parts.append(f"x{scale}: savings_off {s['savings_off_pct']:+.2f}%, wait {s['avg_wait_h']:.1f}h, "
+                     f"{format_wait_tail(s.get('p95_wait_h', math.nan), s.get('tail_mean_wait_h', math.nan))}, "
                      f"lost {s['jobs_lost']} (baseline {s['baseline_jobs_lost']}), completion {100 * s['completion_ratio']:.2f}% of baseline, "
                      f"queued at window ends {s['pending_jobs_end']} (overdue {s['overdue_jobs_end']}){'' if s['feasible'] else ' INFEASIBLE'}")
     parts.append(f"score {result['score']:+.2f}" if result["score"] is not None else "score n/a (infeasible: loses jobs)")
@@ -218,5 +239,6 @@ def format_result(step: int, result: dict) -> str:
 
 
 def format_best(best: dict) -> str:
-    return ", ".join(f"{label}: " + ("none" if e is None else f"{e['step']:,} ({e['savings_off_pct']:+.1f}%, wait {entry_wait(e):.1f}h)")
+    return ", ".join(f"{label}: " + ("none" if e is None else f"{e['step']:,} ({e['savings_off_pct']:+.1f}%, wait {entry_wait(e):.1f}h, "
+                                   f"{format_wait_tail(*entry_wait_tail_metrics(e))})")
                      for label, e in best.items())

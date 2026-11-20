@@ -67,6 +67,9 @@ def write_grid(root, models=("e2p2s6",), scales=(0.5, 1.0)):
 class HierarchicalAggregationTests(unittest.TestCase):
     def test_all_intermediate_means_and_sample_standard_deviations(self):
         raw = balanced_frame(models=("e4p4s2", "e2p2s6"))
+        raw["agent_avg_wait_hours"] = raw.cost_agent / 100
+        raw["agent_p95_wait_hours"] = raw.cost_agent / 20
+        raw["agent_tail_mean_wait_hours"] = raw.cost_agent / 10
         result = aggregate_multi_run(raw.sample(frac=1, random_state=22))
 
         self.assertEqual(len(result.eval_seed), 36)
@@ -74,6 +77,10 @@ class HierarchicalAggregationTests(unittest.TestCase):
         self.assertEqual(len(result.year), 4)
         self.assertEqual(len(result.grand_total), 4)
         self.assertIn("arrivals", result.metrics)
+        self.assertIn("agent_p95_wait_hours", result.metrics)
+        self.assertIn("agent_tail_mean_wait_hours", result.metrics)
+        self.assertNotIn("p95_wait_h", result.metrics)
+        self.assertNotIn("tail_mean_wait_h", result.metrics)
         keys = list(result.grand_total[["model", "scale"]].itertuples(index=False, name=None))
         self.assertEqual(keys, sorted(keys))
 
@@ -392,6 +399,32 @@ class MultiRunLoadingTests(unittest.TestCase):
                 result = aggregate_multi_run(raw)
                 self.assertEqual(result.grand_total.cost_agent_n_valid.tolist(), [26, 26])
                 self.assertEqual(result.grand_total.arrivals_n_valid.tolist(), [27, 27])
+
+    def test_agent_wait_headers_load_and_skip_each_metrics_blanks_independently(self):
+        for path in self.inputs[0].glob("*/eval_main.csv"):
+            frame = pd.read_csv(path)
+            frame["agent_avg_wait_hours"] = 2.0
+            frame["agent_p95_wait_hours"] = 4.0
+            frame["agent_tail_mean_wait_hours"] = 6.0
+            if path == self.path:
+                frame.loc[0, "agent_p95_wait_hours"] = np.nan
+                frame.loc[1, "agent_tail_mean_wait_hours"] = np.nan
+            frame.to_csv(path, index=False)
+        raw = load_multi_run(self.inputs)
+        result = aggregate_multi_run(raw)
+        self.assertEqual(len(raw), 54)
+        for metric, value, valid_counts in (
+            ("agent_avg_wait_hours", 2.0, [27, 27]),
+            ("agent_p95_wait_hours", 4.0, [26, 27]),
+            ("agent_tail_mean_wait_hours", 6.0, [27, 26]),
+        ):
+            with self.subTest(metric=metric):
+                self.assertIn(metric, result.raw)
+                for frame, level in ((result.eval_seed, "eval"), (result.training_seed, "train"),
+                                     (result.year, "year"), (result.grand_total, "total")):
+                    np.testing.assert_allclose(frame[f"{metric}_mean"], value)
+                    np.testing.assert_allclose(frame[f"{metric}_std_{level}"], 0)
+                self.assertEqual(result.grand_total[f"{metric}_n_valid"].tolist(), valid_counts)
 
     def test_nonfinite_and_malformed_metrics_are_not_silently_skipped(self):
         original = self.path.read_bytes()

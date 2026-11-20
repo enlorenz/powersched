@@ -269,6 +269,12 @@ def validate_multi_run(raw: pd.DataFrame) -> list[str]:
                 )
 
     metrics = sorted(set(raw.columns) - IDENTIFIER_COLUMNS)
+    # Keep the wait distribution beside its mean in exported tables.
+    if "mean_wait_h" in metrics:
+        for tail_metric in ("tail_mean_wait_h", "p95_wait_h"):
+            if tail_metric in metrics:
+                metrics.remove(tail_metric)
+                metrics.insert(metrics.index("mean_wait_h") + 1, tail_metric)
     if not metrics:
         raise ValueError("No numerical metrics found")
     for metric in metrics:

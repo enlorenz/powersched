@@ -57,6 +57,8 @@ def build_episode_summary_line(
         f"Jobs={int(episode_data['jobs_completed'])}/{int(episode_data['jobs_submitted'])} "
         f"({float(episode_data['completion_rate']):.0f}%), "
         f"AvgWait={float(episode_data['avg_wait_time']):.1f}h, "
+        f"P95Wait={_fmt_optional(episode_data.get('p95_wait_time'), 1)}h, "
+        f"TailMeanWait={_fmt_optional(episode_data.get('tail_mean_wait_time'), 1)}h, "
         f"PendingEnd={int(episode_data.get('pending_jobs_end', 0))}, "
         f"OverdueEnd={int(episode_data.get('overdue_jobs_end', 0))}, "
         f"EpisodeMaxQueue={int(episode_data['max_queue_size'])}, "

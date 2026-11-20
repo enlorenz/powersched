@@ -25,7 +25,8 @@ import re
 
 import numpy as np
 
-from src.validation import best_per_budget, entry_feasible, entry_wait, last_stage_start, load_history
+from src.validation import (best_per_budget, entry_feasible, entry_wait, entry_wait_tail_metrics,
+                            format_wait_tail, last_stage_start, load_history)
 
 RUN_NAME = re.compile(r"^(?P<curriculum>.+)_s(?P<seed>\d+)_test(?P<year>\d{4})$")
 COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]  # categorical slots 1-5, fixed order
@@ -58,8 +59,9 @@ def main() -> None:
     curricula = list(dict.fromkeys(r["curriculum"] for r in sorted(runs, key=lambda r: r["curriculum"])))
 
     # Per run
-    print(f"Best feasible checkpoint per wait budget (savings vs baseline_off %, mean over scales; wait = worst scale)\n")
-    head = f"{'run':22s} {'validated':>9s} " + " ".join(f"{l:>22s}" for l in labels)
+    print("Best feasible checkpoint per wait budget (savings vs baseline_off %, mean over scales; "
+          "all wait metrics at the scale with the highest mean wait)\n")
+    head = f"{'run':22s} {'validated':>9s} " + " ".join(f"{l:>68s}" for l in labels)
     print(head)
     rows = []
     for r in sorted(runs, key=lambda r: (r["curriculum"], r["seed"], r["year"])):
@@ -67,11 +69,16 @@ def main() -> None:
         cells = []
         for l in labels:
             e = r["best"][l]
-            cells.append("—" if e is None else f"{e['savings_off_pct']:+5.1f}% {entry_wait(e):4.1f}h @{e['step'] / 1e6:.1f}M")
+            p95, tail_mean = entry_wait_tail_metrics(e) if e is not None else (np.nan, np.nan)
+            cells.append("—" if e is None else f"{e['savings_off_pct']:+5.1f}% mean {entry_wait(e):4.1f}h, "
+                         f"{format_wait_tail(p95, tail_mean)} @{e['step'] / 1e6:.1f}M")
             rows.append(dict(run=r["name"], curriculum=r["curriculum"], seed=r["seed"], test_year=r["year"], budget=l,
                              step=None if e is None else e["step"], savings_off_pct=None if e is None else e["savings_off_pct"],
-                             wait_h=None if e is None else entry_wait(e), last_validated_step=last))
-        print(f"{r['name']:22s} {last / 1e6:8.1f}M " + " ".join(f"{c:>22s}" for c in cells))
+                             wait_h=None if e is None else entry_wait(e),
+                             p95_wait_h=float(p95) if np.isfinite(p95) else None,
+                             tail_mean_wait_h=float(tail_mean) if np.isfinite(tail_mean) else None,
+                             last_validated_step=last))
+        print(f"{r['name']:22s} {last / 1e6:8.1f}M " + " ".join(f"{c:>68s}" for c in cells))
 
     # Per curriculum
     print(f"\nPer curriculum: best savings within each budget, mean ± std over runs (runs with a feasible checkpoint / runs)\n")
@@ -95,32 +102,42 @@ def main() -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=130)
-    finite = [entry_wait(h) for r in runs for h in r["history"] if entry_feasible(h) and np.isfinite(entry_wait(h))]
-    for i, c in enumerate(curricula):
-        pts = [(entry_wait(h), h["savings_off_pct"]) for r in runs if r["curriculum"] == c
-               for h in r["history"] if entry_feasible(h) and np.isfinite(entry_wait(h))]
-        if pts:
-            x, y = zip(*pts)
-            ax.scatter(x, y, s=22, color=COLORS[i % len(COLORS)], marker=MARKERS[i % len(MARKERS)], alpha=0.75,
-                       edgecolors="white", linewidths=0.6, label=f"{c} ({len(pts)} checkpoints)")
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), dpi=130, sharey=True)
+    wait_metrics = [("Mean wait (h)", entry_wait),
+                    ("P95 wait (h)", lambda h: entry_wait_tail_metrics(h)[0]),
+                    ("Slowest 5% mean wait (h)", lambda h: entry_wait_tail_metrics(h)[1])]
+    for ax, (label, metric) in zip(axes, wait_metrics):
+        finite = []
+        for i, c in enumerate(curricula):
+            pts = [(metric(h), h["savings_off_pct"]) for r in runs if r["curriculum"] == c
+                   for h in r["history"] if entry_feasible(h) and np.isfinite(metric(h))]
+            if pts:
+                x, y = zip(*pts)
+                finite.extend(x)
+                ax.scatter(x, y, s=22, color=COLORS[i % len(COLORS)], marker=MARKERS[i % len(MARKERS)], alpha=0.75,
+                           edgecolors="white", linewidths=0.6, label=f"{c} ({len(pts)} checkpoints)")
+        ax.axhline(0, color="#5f5e58", linewidth=0.8, zorder=0)
+        ax.set_xlabel(label)
+        ax.grid(True, color="#e6e5e0", linewidth=0.6)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        if finite:
+            ax.set_xlim(0, max(max(finite) * 1.05, 1.0))
+            ax.legend(frameon=False, fontsize=9, loc="lower right")
+        else:
+            ax.text(0.5, 0.5, "No recorded values", transform=ax.transAxes, ha="center")
+    ax = axes[0]
     for b in budgets[:-1]:
         ax.axvline(b, color="#8a8a85", linewidth=0.8, linestyle=(0, (3, 3)), zorder=0)
         ax.text(b, 1.0, f" {b:g} h", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=8, color="#5f5e58")
-    ax.axhline(0, color="#5f5e58", linewidth=0.8, zorder=0)
-    ax.set_xlabel("average wait at the worst arrival scale (h)")
     ax.set_ylabel("savings vs baseline_off (%), mean over scales")
-    ax.set_title("Validated checkpoints that lose no jobs (training-year prices)", fontsize=11, loc="left")
-    ax.grid(True, color="#e6e5e0", linewidth=0.6)
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    if finite:
-        ax.set_xlim(0, max(finite) * 1.05)
-    ax.legend(frameon=False, fontsize=9, loc="lower right")
+    fig.suptitle("Validated checkpoints that lose no jobs (training-year prices)\n"
+                 "Wait metrics at the scale with the highest mean wait", fontsize=11)
     fig.tight_layout()
     png_path = os.path.join(out_dir, "validation_frontier.png")
     fig.savefig(png_path)
+    plt.close(fig)
     print(f"\nWritten {csv_path} and {png_path}")
 
 

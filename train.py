@@ -284,6 +284,8 @@ def main():
             model.logger.record(f"val/completion_ratio_x{scale}", s["completion_ratio"])
             model.logger.record(f"val/jobs_lost_x{scale}", s["jobs_lost"])
             model.logger.record(f"val/avg_wait_h_x{scale}", s["avg_wait_h"])
+            model.logger.record(f"val/p95_wait_h_x{scale}", s["p95_wait_h"])
+            model.logger.record(f"val/tail_mean_wait_h_x{scale}", s["tail_mean_wait_h"])
         model.logger.record("val/savings_off_pct", result["savings_off_pct"])
         model.logger.record("val/feasible", float(result["feasible"]))
         model.logger.dump(model.num_timesteps)
@@ -482,6 +484,9 @@ def main():
                 total_baseline_completed = sum(ep['baseline_jobs_completed'] for ep in env.metrics.episode_costs)
                 avg_wait_time = sum(ep['avg_wait_time'] * int(ep.get('jobs_launched', ep['jobs_completed'])) for ep in env.metrics.episode_costs) / total_jobs_launched if total_jobs_launched > 0 else 0
                 avg_baseline_wait_time = sum(ep['baseline_avg_wait_time'] * int(ep.get('baseline_jobs_launched', ep['baseline_jobs_completed'])) for ep in env.metrics.episode_costs) / total_baseline_launched if total_baseline_launched > 0 else 0
+                # Pool launch waits across the evaluation; episode percentiles cannot be averaged.
+                p95_wait_time, tail_mean_wait_time = env.metrics.get_wait_tail_metrics(episode=False)
+                baseline_p95_wait_time, baseline_tail_mean_wait_time = env.metrics.get_wait_tail_metrics(baseline=True, episode=False)
                 avg_max_queue = sum(ep['max_queue_size'] for ep in env.metrics.episode_costs) / len(env.metrics.episode_costs)
                 avg_baseline_max_queue = sum(ep['baseline_max_queue_size'] for ep in env.metrics.episode_costs) / len(env.metrics.episode_costs)
                 avg_pending_jobs_end = sum(int(ep.get('pending_jobs_end', 0)) for ep in env.metrics.episode_costs) / len(env.metrics.episode_costs)
@@ -532,6 +537,8 @@ def main():
                 print(f"  Jobs Launched: {total_jobs_launched:,} / {total_jobs_submitted:,}")
                 print(f"  Jobs Completed: {total_jobs_completed:,} / {total_jobs_submitted:,} ({total_agent_completion_rate:.1f}%)")
                 print(f"  Average Wait Time: {avg_wait_time:.1f} hours")
+                print(f"  P95 Wait Time: {p95_wait_time:.1f} hours")
+                print(f"  Slowest 5% Mean Wait Time: {tail_mean_wait_time:.1f} hours")
                 print(f"  Average Max Queue Size: {avg_max_queue:.0f}")
                 print(f"  Average Pending Jobs At Episode End: {avg_pending_jobs_end:.1f}")
                 print(f"  Average Overdue Jobs At Episode End: {avg_overdue_jobs_end:.1f}")
@@ -542,6 +549,8 @@ def main():
                 print(f"  Jobs Launched: {total_baseline_launched:,} / {total_baseline_submitted:,}")
                 print(f"  Jobs Completed: {total_baseline_completed:,} / {total_baseline_submitted:,} ({total_baseline_completion_rate:.1f}%)")
                 print(f"  Average Wait Time: {avg_baseline_wait_time:.1f} hours")
+                print(f"  P95 Wait Time: {baseline_p95_wait_time:.1f} hours")
+                print(f"  Slowest 5% Mean Wait Time: {baseline_tail_mean_wait_time:.1f} hours")
                 print(f"  Average Max Queue Size: {avg_baseline_max_queue:.0f}")
                 print(f"  Baseline Total Cost: €{total_baseline_cost:,.0f}")
                 print(f"  Baseline_off Total Cost: €{total_baseline_off_cost:,.0f}")
@@ -636,7 +645,10 @@ def main():
                     "baseline_jobs_expired": total_baseline_jobs_dropped - env.metrics.baseline_jobs_rejected_queue_full,
                     "max_queue": env.metrics.max_queue_size_reached,
                     "baseline_max_queue": env.metrics.baseline_max_queue_size_reached,
-                    "avg_wait_h": avg_wait_time, "baseline_avg_wait_h": avg_baseline_wait_time,
+                    "avg_wait_h": avg_wait_time,
+                    "p95_wait_h": p95_wait_time, "tail_mean_wait_h": tail_mean_wait_time,
+                    "baseline_avg_wait_h": avg_baseline_wait_time,
+                    "baseline_p95_wait_h": baseline_p95_wait_time, "baseline_tail_mean_wait_h": baseline_tail_mean_wait_time,
                     "agent_mean_price": total_agent_prop_mean_price, "baseline_off_mean_price": total_baseline_off_prop_mean_price,
                 }
                 if args.oracle:

@@ -4,16 +4,23 @@ Run with: python -m test.test_validation
 """
 
 import contextlib
+import csv
 import io
 import json
+import math
 import os
 import tempfile
+from collections import Counter
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 from src.environment import ComputeClusterEnv, Weights
 from src.plot_config import PlotConfig
-from src.validation import ValidationConfig, run_validation, record_result, load_history, window_starts, best_per_budget, last_stage_start, BEST_FILE
+from src.validation import (ValidationConfig, run_validation, record_result, load_history, window_starts,
+                            best_per_budget, last_stage_start, entry_wait_tail_metrics, format_best,
+                            format_result, BEST_FILE)
 from src.workloadgen import WorkloadGenConfig, WorkloadGenerator
 
 CONFIG = ValidationConfig(arrival_scales=(1.0,), windows=2, episodes_per_window=1, seed=5)
@@ -125,6 +132,81 @@ def test_only_last_stage_checkpoints_are_picked():
 def test_window_starts_spread_evenly():
     assert window_starts(17520, 4) == [2190, 6570, 10950, 15330]
     assert window_starts(None, 2) == [0, 336]
+
+
+def test_wait_tail_metrics_pool_episodes_across_reset_windows():
+    config = ValidationConfig(arrival_scales=(1.0,), windows=2, episodes_per_window=2, seed=17)
+
+    class HistogramEnv:
+        def __init__(self):
+            self.prices = SimpleNamespace(external_prices=None)
+            self.metrics = SimpleNamespace(episode_costs=[], episode_job_wait_time_histogram=Counter(),
+                                           job_wait_time_histogram=Counter({999: 1000}))
+
+        def reset(self, seed=None, options=None):
+            if options and options.get("hard_reset"):
+                self.index = (seed - config.seed) * config.episodes_per_window
+            else:
+                self.index += 1
+            self.metrics.episode_job_wait_time_histogram.clear()
+            return {}, {}
+
+        def step(self, action):
+            histograms = ({0: 50}, {0: 50}, {10: 1}, {20: 1})
+            histogram = histograms[self.index]
+            self.metrics.episode_job_wait_time_histogram.update(histogram)
+            count = sum(histogram.values())
+            self.metrics.episode_costs.append(dict(
+                agent_cost=1.0, baseline_cost_off=2.0, jobs_submitted=count, jobs_launched=count,
+                jobs_completed=count, baseline_jobs_completed=count,
+                avg_wait_time=sum(age * n for age, n in histogram.items()) / count,
+            ))
+            return {}, 0.0, True, False, {}
+
+    envs = {1.0: HistogramEnv()}
+    first = run_validation(FixedPolicy([0, 0]), None, config, envs)
+    second = run_validation(FixedPolicy([0, 0]), None, config, envs)
+    assert first == second  # Neither earlier validation calls nor hard-reset windows leak into the pool.
+    scale = first["scales"]["1"]
+    assert scale["episodes"] == 4 and scale["jobs_launched"] == 102
+    assert scale["p95_wait_h"] == 0.0
+    assert math.isclose(scale["tail_mean_wait_h"], 30.0 / 5.1)
+    assert "wait 0.3h, p95 0.0h, slowest 5% mean 5.9h" in format_result(1, first)
+
+
+def test_entry_tail_metrics_use_the_scale_with_highest_mean():
+    entry = _result(5.0, 10.0)
+    entry["step"] = 1
+    entry["scales"]["1"].update(p95_wait_h=11.0, tail_mean_wait_h=12.0)
+    entry["scales"]["2"] = dict(entry["scales"]["1"], avg_wait_h=9.0, p95_wait_h=100.0, tail_mean_wait_h=200.0)
+    assert entry_wait_tail_metrics(entry) == (11.0, 12.0)
+    assert "wait 10.0h, p95 11.0h, slowest 5% mean 12.0h" in format_best({"any": entry})
+    old = {"step": 1, **_result(5.0, 4.0)}
+    assert all(math.isnan(value) for value in entry_wait_tail_metrics(old))
+    assert "p95 n/a, slowest 5% mean n/a" in format_best({"6h": old})
+
+
+def test_validation_analysis_reports_tail_metrics_and_legacy_missing_values():
+    import analyze_validation
+
+    with tempfile.TemporaryDirectory() as directory:
+        models = os.path.join(directory, "de_s7_test2024", "models", "weights")
+        os.makedirs(models)
+        record_result(models, 1, _result(5.0, 4.0))
+        result = _result(10.0, 8.0)
+        result["scales"]["1"].update(p95_wait_h=12.0, tail_mean_wait_h=15.0)
+        record_result(models, 2, result)
+        output = io.StringIO()
+        with patch("sys.argv", ["analyze_validation", "--sessions", directory]), contextlib.redirect_stdout(output):
+            analyze_validation.main()
+        with open(os.path.join(directory, "validation_best.csv")) as f:
+            rows = {row["budget"]: row for row in csv.DictReader(f)}
+        assert rows["6h"]["p95_wait_h"] == "" and rows["6h"]["tail_mean_wait_h"] == ""
+        assert rows["12h"]["wait_h"] == "8.0"
+        assert rows["12h"]["p95_wait_h"] == "12.0" and rows["12h"]["tail_mean_wait_h"] == "15.0"
+        assert "p95 n/a, slowest 5% mean n/a" in output.getvalue()
+        assert "p95 12.0h, slowest 5% mean 15.0h" in output.getvalue()
+        assert os.path.getsize(os.path.join(directory, "validation_frontier.png")) > 0
 
 
 def main():

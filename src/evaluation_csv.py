@@ -21,6 +21,8 @@ EVALUATION_CSV_METRIC_FIELDS = (
     "cost_per_1k_baseline_off",
     "completion_pct",
     "mean_wait_h",
+    "p95_wait_h",
+    "tail_mean_wait_h",
     "dropped_jobs",
     "dropped_per_eur",
     "power_agent_mwh",
@@ -49,6 +51,8 @@ _JOBS_RE = re.compile(
     rf"\bJobs=(?P<completed>{_NUMBER})/(?P<submitted>{_NUMBER})"
 )
 _WAIT_RE = re.compile(rf"\bAvgWait=(?P<value>{_NUMBER})h")
+_P95_WAIT_RE = re.compile(rf"\bP95Wait=(?P<value>{_NUMBER})h")
+_TAIL_MEAN_WAIT_RE = re.compile(rf"\bTailMeanWait=(?P<value>{_NUMBER})h")
 _DROPPED_RE = re.compile(rf"\b(?:Dropped|Lost)=(?P<value>{_NUMBER})")
 _PROP_POWER_RE = re.compile(
     rf"\bPropPower=(?P<agent>{_NUMBER})/"
@@ -80,6 +84,12 @@ _JOB_PROCESSING_TOTALS_RE = re.compile(
     rf"Jobs Completed:\s*(?P<baseline_jobs_completed>{_NUMBER})\s*/",
     re.DOTALL,
 )
+_AGENT_JOB_PROCESSING_RE = re.compile(
+    r"=== JOB PROCESSING METRICS ===.*?\bAgent:\s*(?P<agent>.*?)\bBaseline:",
+    re.DOTALL,
+)
+_P95_WAIT_TOTAL_RE = re.compile(rf"P95 Wait Time:\s*(?P<value>{_NUMBER})\s*hours")
+_TAIL_MEAN_WAIT_TOTAL_RE = re.compile(rf"Slowest 5% Mean Wait Time:\s*(?P<value>{_NUMBER})\s*hours")
 _AGGREGATE_COST_TOTALS_RE = re.compile(
     rf"=== JOB PROCESSING METRICS ===.*?"
     rf"\bAgent:.*?"
@@ -142,6 +152,8 @@ def _parse_episode_lines(stdout: str) -> list[dict[str, float | int]]:
 
         jobs = _require(_JOBS_RE, line, "Jobs")
         wait = _require(_WAIT_RE, line, "AvgWait")
+        p95_wait = _P95_WAIT_RE.search(line)
+        tail_mean_wait = _TAIL_MEAN_WAIT_RE.search(line)
         dropped = _require(_DROPPED_RE, line, "Dropped/Lost")
         power = _require(_PROP_POWER_RE, line, "PropPower")
         cost = _require(_PROP_COST_RE, line, "PropCost")
@@ -178,6 +190,8 @@ def _parse_episode_lines(stdout: str) -> list[dict[str, float | int]]:
                     baseline_jobs_completed_estimate
                 ),
                 "avg_wait_time": _number(wait.group("value")),
+                "p95_wait_time": _number(p95_wait.group("value")) if p95_wait else float("nan"),
+                "tail_mean_wait_time": _number(tail_mean_wait.group("value")) if tail_mean_wait else float("nan"),
                 "jobs_lost_total": int(_number(dropped.group("value"))),
                 "oracle_cost": (
                     _number(oracle_liquid.group("value"))
@@ -241,6 +255,14 @@ def build_evaluation_csv_row(
     evaluation_csv_fieldnames(sweep_parameter)
     episodes = _parse_episode_lines(stdout)
     job_totals = _JOB_PROCESSING_TOTALS_RE.search(stdout)
+    agent_totals = _AGENT_JOB_PROCESSING_RE.search(stdout)
+    agent_block = agent_totals.group("agent") if agent_totals else ""
+    p95_wait_total = _P95_WAIT_TOTAL_RE.search(agent_block)
+    tail_mean_wait_total = _TAIL_MEAN_WAIT_TOTAL_RE.search(agent_block)
+    # Episode percentiles and tail means cannot reconstruct the pooled distribution.
+    # Preserve missing values for legacy output or a missing aggregate report.
+    p95_wait_h = _number(p95_wait_total.group("value")) if p95_wait_total else None
+    tail_mean_wait_h = _number(tail_mean_wait_total.group("value")) if tail_mean_wait_total else None
 
     # In current train.py the aggregate Total Cost values and PropCost use the
     # same per-core power formula. Prefer those once-rounded run totals; fall
@@ -357,6 +379,8 @@ def build_evaluation_csv_row(
         "cost_per_1k_baseline_off": cost_per_1k_baseline_off,
         "completion_pct": _safe_ratio(jobs_completed * 100.0, jobs_submitted),
         "mean_wait_h": mean_wait_h,
+        "p95_wait_h": p95_wait_h,
+        "tail_mean_wait_h": tail_mean_wait_h,
         "dropped_jobs": dropped_jobs,
         "dropped_per_eur": (
             dropped_jobs / savings_vs_baseline_off

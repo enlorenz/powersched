@@ -193,6 +193,7 @@ def run_scale_eval(
         completion_rate=completion_rate,
         agent_avg_wait_hours=agent_avg_wait_hours,
         baseline_avg_wait_hours=baseline_avg_wait_hours,
+        **metrics.parse_wait_tail_summary(combined_output),
         agent_cost_1k=agent_cost_1k,
         baseline_cost_1k=baseline_cost_1k,
         baseline_off_cost_1k=baseline_off_cost_1k,
@@ -220,7 +221,9 @@ def run_scale_eval(
         f"prop_savings_off={stats.prop_savings_off_mean:.0f}±{stats.prop_savings_off_std:.0f}, "
         f"prop_eval_savings={stats.prop_evaluation_savings:.0f}/{stats.prop_evaluation_savings_off:.0f}, "
         f"prop_annualized_savings={stats.prop_annualized_savings:.0f}/{stats.prop_annualized_savings_off:.0f}, "
-        f"wait_delta={stats.wait_delta_hours:.3f}h"
+        f"wait_delta={stats.wait_delta_hours:.3f}h, "
+        f"p95_wait_delta={stats.p95_wait_delta_hours:.3f}h, "
+        f"tail_mean_wait_delta={stats.tail_mean_wait_delta_hours:.3f}h"
     )
     return stats, combined_output
 
@@ -275,7 +278,6 @@ def make_plot(
     prop_eff_sav_pct_std = np.array([s.prop_effective_savings_pct_std for s in ordered], dtype=float)
     prop_eff_sav_pct_off_mean = np.array([s.prop_effective_savings_pct_off_mean for s in ordered], dtype=float)
     prop_eff_sav_pct_off_std = np.array([s.prop_effective_savings_pct_off_std for s in ordered], dtype=float)
-    wait_delta_hours = np.array([s.wait_delta_hours for s in ordered], dtype=float)
     cost_per_1k_delta_base_off_mean = np.array([s.cost_per_1k_delta_pct_baseline_off_mean for s in ordered], dtype=float)
     cost_per_1k_delta_base_off_std = np.array([s.cost_per_1k_delta_pct_baseline_off_std for s in ordered], dtype=float)
     prop_power_delta_base_off_mean = np.array([s.prop_power_delta_pct_baseline_off_mean for s in ordered], dtype=float)
@@ -403,13 +405,10 @@ def make_plot(
     )
     _panel(
         "07_occupancy_vs_average_wait_delta",
-        "Occupancy vs Average Wait Delta",
+        "Occupancy vs Wait Deltas",
         "Agent Occupancy (Nodes, %) / Episode",
-        "Average Wait Delta (Agent - Baseline, hours)",
-        lambda ax: (
-            plot_colored_points(ax, occ_mean, wait_delta_hours, xerr=occ_std),
-            metrics.maybe_plot_fit(ax, occ_mean, wait_delta_hours, fit),
-        ),
+        "Wait Delta (Agent - Baseline, hours)",
+        lambda ax: metrics.plot_wait_deltas(ax, ordered, occ_mean, occ_std, point_colors, fit),
     )
     _panel(
         "08_occupancy_vs_cost_per_1k_delta_baseline_off",

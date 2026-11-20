@@ -105,6 +105,7 @@ def main():
     completed = sum(int(x["jobs_completed"]) for x in eps)
     launched = sum(int(x.get("jobs_launched", x["jobs_completed"])) for x in eps)
     wait = sum(float(x["avg_wait_time"]) * int(x.get("jobs_launched", x["jobs_completed"])) for x in eps) / max(launched, 1)
+    p95_wait, tail_mean_wait = env.metrics.get_wait_tail_metrics(episode=False)
     result = {
         "model": a.model, "weights": a.weights, "variant": a.variant, "mode": a.mode, "seed": a.seed,
         "job_arrival_scale": a.job_arrival_scale, "prices": a.prices, "stochastic": a.stochastic,
@@ -113,6 +114,8 @@ def main():
         "savings_pct_vs_idle_free_mean_episode": float(np.mean([x["savings_pct_baseline_off"] for x in eps])),
         "completion_pct": 100 * completed / max(submitted, 1),
         "avg_wait_h": wait,
+        "p95_wait_h": p95_wait,
+        "tail_mean_wait_h": tail_mean_wait,
         "jobs_lost": sum(int(x.get("jobs_lost_total", x.get("jobs_dropped", 0))) for x in eps),
     }
     if a.mode == "agreement":

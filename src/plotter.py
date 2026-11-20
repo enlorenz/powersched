@@ -48,6 +48,14 @@ def _episode_launch_wait(metrics, baseline: bool = False) -> float:
     return (total_wait / launched) if launched > 0 else 0.0
 
 
+def _episode_wait_tail_text(metrics, baseline: bool = False) -> str:
+    get_metrics = getattr(metrics, "get_wait_tail_metrics", None)
+    if get_metrics is None:
+        return ""
+    p95, tail_mean = get_metrics(baseline=baseline, episode=True)
+    return f", p95={p95:.1f}h, slowest 5% mean={tail_mean:.1f}h"
+
+
 def _compute_cumulative_savings(episode_costs: list[dict[str, float | int]]) -> dict[str, np.ndarray] | None:
     """
     episode_costs: list of dicts with keys:
@@ -175,10 +183,11 @@ def plot_episode(env: ComputeClusterEnv, num_hours: int, max_nodes: int, save: b
               f"Base_Off: €{env.metrics.episode_baseline_cost_off:.0f} "
               f"(+{env.metrics.episode_baseline_cost_off - env.metrics.episode_total_cost:.0f}, {baseline_off_savings_pct:.1f}%)\n"
               f"Jobs: {env.metrics.episode_jobs_completed}/{env.metrics.episode_jobs_submitted} ({completion_rate:.0f}%, "
-              f"wait={avg_wait:.1f}h, Q={env.metrics.episode_max_queue_size_reached}) | "
+              f"wait={avg_wait:.1f}h{_episode_wait_tail_text(env.metrics)}, Q={env.metrics.episode_max_queue_size_reached})\n"
               f"Base: {env.metrics.episode_baseline_jobs_completed}/{env.metrics.episode_baseline_jobs_submitted} ({baseline_completion_rate:.0f}%, "
-              f"wait={baseline_avg_wait:.1f}h, Q={env.metrics.episode_baseline_max_queue_size_reached})",
+              f"wait={baseline_avg_wait:.1f}h{_episode_wait_tail_text(env.metrics, baseline=True)}, Q={env.metrics.episode_baseline_max_queue_size_reached})",
               fontsize=9)
+    fig.subplots_adjust(top=0.80)
 
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -228,8 +237,8 @@ def plot_dashboard(env: ComputeClusterEnv, num_hours: int, max_nodes: int, save:
         f"{env.session} | ep:{env.current_episode} step:{env.current_step} | {env.weights}\n"
         f"Cost: €{agent_cost:.0f}, Base: €{base_cost:.0f} (+{base_cost - agent_cost:.0f}, {pct_vs_base:.1f}%), "
         f"Base_Off: €{base_cost_off:.0f} (+{base_cost_off - agent_cost:.0f}, {pct_vs_base_off:.1f}%)\n"
-        f"Jobs: {env.metrics.episode_jobs_completed}/{env.metrics.episode_jobs_submitted} ({completion_rate:.0f}%, wait={avg_wait:.1f}h, Q={env.metrics.episode_max_queue_size_reached}) | "
-        f"Base: {env.metrics.episode_baseline_jobs_completed}/{env.metrics.episode_baseline_jobs_submitted} ({baseline_completion_rate:.0f}%, wait={baseline_avg_wait:.1f}h, Q={env.metrics.episode_baseline_max_queue_size_reached})"
+        f"Jobs: {env.metrics.episode_jobs_completed}/{env.metrics.episode_jobs_submitted} ({completion_rate:.0f}%, wait={avg_wait:.1f}h{_episode_wait_tail_text(env.metrics)}, Q={env.metrics.episode_max_queue_size_reached})\n"
+        f"Base: {env.metrics.episode_baseline_jobs_completed}/{env.metrics.episode_baseline_jobs_submitted} ({baseline_completion_rate:.0f}%, wait={baseline_avg_wait:.1f}h{_episode_wait_tail_text(env.metrics, baseline=True)}, Q={env.metrics.episode_baseline_max_queue_size_reached})"
     )
 
     # ----- collect per-hour panels -----
@@ -385,7 +394,8 @@ def plot_dashboard(env: ComputeClusterEnv, num_hours: int, max_nodes: int, save:
             ax.set_xlabel("Hours", fontsize=9)
 
     # Header text
-    fig.subplots_adjust(top=0.82, left=0.06, right=0.98, bottom=0.06, hspace=0.45, wspace=0.25)
+    header_top = min(0.82, 1.0 - 0.95 / fig.get_figheight())
+    fig.subplots_adjust(top=header_top, left=0.06, right=0.98, bottom=0.06, hspace=0.45, wspace=0.25)
     fig.text(0.01, 0.99, header, ha="left", va="top", fontsize=9, family="monospace")
 
     # Save/show
@@ -497,7 +507,7 @@ def plot_cumulative_savings(env: ComputeClusterEnv, episode_costs: list[dict[str
 
 def plot_episode_summary(env: ComputeClusterEnv, episode_costs: list[dict[str, float | int]], session_dir: str | None = None, save: bool = True, show: bool = True, suffix: int | str = "") -> dict[str, float] | None:
     """
-    Per-episode summary: costs, avg wait time, completion rate.
+    Per-episode summary: costs, wait times, completion rate.
     """
     if not episode_costs:
         print("plot_episode_summary(): no episode_costs, skipping.")
@@ -511,6 +521,8 @@ def plot_episode_summary(env: ComputeClusterEnv, episode_costs: list[dict[str, f
     base_off_cost = np.array([ep.get("baseline_cost_off", 0.0) for ep in episode_costs], dtype=float)
 
     avg_wait = np.array([ep.get("avg_wait_time", 0.0) for ep in episode_costs], dtype=float)
+    p95_wait = np.array([ep.get("p95_wait_time", np.nan) for ep in episode_costs], dtype=float)
+    tail_mean_wait = np.array([ep.get("tail_mean_wait_time", np.nan) for ep in episode_costs], dtype=float)
     completion = np.array([ep.get("completion_rate", 0.0) for ep in episode_costs], dtype=float)
     max_queue = np.array([ep.get("max_queue_size", 0.0) for ep in episode_costs], dtype=float)
     dropped = np.array([ep.get("jobs_lost_total", ep.get("jobs_dropped", 0.0)) for ep in episode_costs], dtype=float)
@@ -528,8 +540,12 @@ def plot_episode_summary(env: ComputeClusterEnv, episode_costs: list[dict[str, f
 
     # Wait time + completion rate
     ax2.plot(eps, avg_wait, label="Avg wait (h)", linewidth=2)
+    if np.any(np.isfinite(p95_wait)):
+        ax2.plot(eps, p95_wait, label="P95 wait (h)", linewidth=2, linestyle="--")
+    if np.any(np.isfinite(tail_mean_wait)):
+        ax2.plot(eps, tail_mean_wait, label="Slowest 5% mean wait (h)", linewidth=2, linestyle="-.")
     ax2.set_xlabel("Episode")
-    ax2.set_ylabel("Avg wait (hours)")
+    ax2.set_ylabel("Wait (hours)")
     ax2.grid(True, alpha=0.3)
 
     ax2b = ax2.twinx()
@@ -580,6 +596,8 @@ def plot_episode_summary(env: ComputeClusterEnv, episode_costs: list[dict[str, f
         "baseline_cost_avg": float(np.mean(base_cost)) if base_cost.size else 0.0,
         "baseline_off_cost_avg": float(np.mean(base_off_cost)) if base_off_cost.size else 0.0,
         "avg_wait_time_avg": float(np.mean(avg_wait)) if avg_wait.size else 0.0,
+        "p95_wait_time_avg": float(np.mean(p95_wait[np.isfinite(p95_wait)])) if np.any(np.isfinite(p95_wait)) else float("nan"),
+        "tail_mean_wait_time_avg": float(np.mean(tail_mean_wait[np.isfinite(tail_mean_wait)])) if np.any(np.isfinite(tail_mean_wait)) else float("nan"),
         "completion_rate_avg": float(np.mean(completion)) if completion.size else 0.0,
         "max_queue_avg": float(np.mean(max_queue)) if max_queue.size else 0.0,
         "dropped_avg": float(np.mean(dropped)) if dropped.size else 0.0,

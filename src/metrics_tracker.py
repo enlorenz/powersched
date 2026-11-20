@@ -1,10 +1,55 @@
 """Metrics tracking and episode recording for the PowerSched environment."""
 
+from collections import Counter
+from collections.abc import Mapping
+
 from src.config import COST_IDLE_MW, COST_USED_MW, CORES_PER_NODE, MAX_NODES
 
 
 class MetricsTracker:
     """Tracks metrics throughout training episodes."""
+
+    @staticmethod
+    def wait_tail_metrics(histogram: Mapping[int, int]) -> tuple[float, float]:
+        """Return nearest-rank p95 and the mean wait of exactly the slowest 5%.
+
+        Counts represent jobs at launch, with integer queue ages in hours. The
+        tail includes a fractional boundary job when 5% of the population is
+        not an integer, so ties never enlarge it. Empty populations return zero,
+        matching the mean-wait convention.
+        """
+        total = sum(histogram.values())
+        if total == 0:
+            return 0.0, 0.0
+
+        ages = sorted(histogram)
+        rank = (19 * total + 19) // 20  # ceil(0.95 * total), without rounding error
+        cumulative = 0
+        for age in ages:
+            cumulative += histogram[age]
+            if cumulative >= rank:
+                p95 = float(age)
+                break
+
+        # Work in twentieths of a job: the 5% tail has exactly `total` units.
+        # Integer weights keep fractional boundary selection exact.
+        remaining = total
+        tail_wait = 0
+        for age in reversed(ages):
+            weight = min(20 * histogram[age], remaining)
+            tail_wait += age * weight
+            remaining -= weight
+            if remaining == 0:
+                break
+        return p95, tail_wait / total
+
+    def get_wait_tail_metrics(self, *, baseline: bool = False, episode: bool = True) -> tuple[float, float]:
+        """Read launch-wait tail metrics for the current episode or full timeline."""
+        if episode:
+            histogram = self.episode_baseline_job_wait_time_histogram if baseline else self.episode_job_wait_time_histogram
+        else:
+            histogram = self.baseline_job_wait_time_histogram if baseline else self.job_wait_time_histogram
+        return self.wait_tail_metrics(histogram)
 
     @staticmethod
     def _effective_mean_price(total_cost: float, total_power_mwh: float) -> float:
@@ -52,6 +97,7 @@ class MetricsTracker:
         self.jobs_completed: int = 0
         self.total_job_wait_time: int = 0
         self.total_job_wait_time_launch: int = 0
+        self.job_wait_time_histogram: Counter[int] = Counter()
         self.max_queue_size_reached: int = 0
         self.jobs_dropped: int = 0
         self.jobs_flushed: int = 0
@@ -63,6 +109,7 @@ class MetricsTracker:
         self.baseline_jobs_completed: int = 0
         self.baseline_total_job_wait_time: int = 0
         self.baseline_total_job_wait_time_launch: int = 0
+        self.baseline_job_wait_time_histogram: Counter[int] = Counter()
         self.baseline_max_queue_size_reached: int = 0
         self.baseline_jobs_dropped: int = 0
         self.baseline_jobs_flushed: int = 0
@@ -103,6 +150,7 @@ class MetricsTracker:
         self.episode_jobs_completed: int = 0
         self.episode_total_job_wait_time: int = 0
         self.episode_total_job_wait_time_launch: int = 0
+        self.episode_job_wait_time_histogram: Counter[int] = Counter()
         self.episode_max_queue_size_reached: int = 0
         self.episode_jobs_dropped: int = 0
         self.episode_jobs_flushed: int = 0
@@ -115,6 +163,7 @@ class MetricsTracker:
         self.episode_baseline_jobs_completed: int = 0
         self.episode_baseline_total_job_wait_time: int = 0
         self.episode_baseline_total_job_wait_time_launch: int = 0
+        self.episode_baseline_job_wait_time_histogram: Counter[int] = Counter()
         self.episode_baseline_max_queue_size_reached: int = 0
         self.episode_baseline_jobs_dropped: int = 0
         self.episode_baseline_jobs_flushed: int = 0
@@ -169,6 +218,8 @@ class MetricsTracker:
             if self.episode_baseline_jobs_launched > 0
             else 0.0
         )
+        p95_wait_time, tail_mean_wait_time = self.get_wait_tail_metrics()
+        baseline_p95_wait_time, baseline_tail_mean_wait_time = self.get_wait_tail_metrics(baseline=True)
 
         # Calculate completion rates
         completion_rate: float = (
@@ -323,6 +374,8 @@ class MetricsTracker:
             'jobs_launched': self.episode_jobs_launched,
             'jobs_completed': self.episode_jobs_completed,
             'avg_wait_time': avg_wait_time,
+            'p95_wait_time': p95_wait_time,
+            'tail_mean_wait_time': tail_mean_wait_time,
             'completion_rate': completion_rate,
             'on_nodes_end': int(self.episode_on_nodes[-1]) if self.episode_on_nodes else 0,
             'used_nodes_end': int(self.episode_used_nodes[-1]) if self.episode_used_nodes else 0,
@@ -338,6 +391,8 @@ class MetricsTracker:
             'baseline_jobs_launched': self.episode_baseline_jobs_launched,
             'baseline_jobs_completed': self.episode_baseline_jobs_completed,
             'baseline_avg_wait_time': baseline_avg_wait_time,
+            'baseline_p95_wait_time': baseline_p95_wait_time,
+            'baseline_tail_mean_wait_time': baseline_tail_mean_wait_time,
             'baseline_completion_rate': baseline_completion_rate,
             'baseline_max_queue_size': self.episode_baseline_max_queue_size_reached,
             # Loss metrics: includes age expirations, queue-full rejections, and streak-triggered flushes.

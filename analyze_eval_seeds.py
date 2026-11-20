@@ -28,7 +28,8 @@ import numpy as np
 METRICS = [
     "savings_off_pct", "savings_pct", "prop_savings_off_pct", "prop_savings_pct",
     "avg_monthly_savings_pct_off", "completion_pct", "baseline_completion_pct",
-    "jobs_lost", "baseline_jobs_lost", "avg_wait_h", "baseline_avg_wait_h",
+    "jobs_lost", "baseline_jobs_lost", "avg_wait_h", "p95_wait_h", "tail_mean_wait_h",
+    "baseline_avg_wait_h", "baseline_p95_wait_h", "baseline_tail_mean_wait_h",
     "agent_mean_price", "baseline_off_mean_price", "capture_contiguous_pct", "capture_liquid_pct",
     "jobs_rejected_queue_full", "jobs_expired", "baseline_jobs_rejected_queue_full", "baseline_jobs_expired",
     "max_queue", "baseline_max_queue",

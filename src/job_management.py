@@ -180,11 +180,15 @@ def _start_job(
         metrics.baseline_total_job_wait_time_launch += job_age
         metrics.episode_baseline_jobs_launched += 1
         metrics.episode_baseline_total_job_wait_time_launch += job_age
+        metrics.baseline_job_wait_time_histogram[job_age] += 1
+        metrics.episode_baseline_job_wait_time_histogram[job_age] += 1
     else:
         metrics.jobs_launched += 1
         metrics.total_job_wait_time_launch += job_age
         metrics.episode_jobs_launched += 1
         metrics.episode_total_job_wait_time_launch += job_age
+        metrics.job_wait_time_histogram[job_age] += 1
+        metrics.episode_job_wait_time_histogram[job_age] += 1
 
 
 def _nodes_with_free_cores(free_cores: np.ndarray) -> np.ndarray:
