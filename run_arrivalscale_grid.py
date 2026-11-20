@@ -34,6 +34,7 @@ from pathlib import Path
 SESSION_SEEDS = (1, 2, 3)
 TEST_YEARS = (2023, 2024, 2025)
 EVAL_SEEDS = (101, 201, 301)
+SET_YEAR = None  # Set to YEAR to run only that year. Otherwise set to None to run all three years.
 #DEFAULT_SCALES = "0.25,0.5,0.75,1,1.5,2,2.5,3,4,5" # for 23 jobs
 DEFAULT_SCALES = "0.15,0.3,0.45,0.6,1,1.25,1.5,1.8,2.4,3" # for 26 jobs
 
@@ -140,6 +141,8 @@ def build_runs(args: argparse.Namespace, project_root: Path) -> list[Run]:
         for test_year in TEST_YEARS:
             session = session_root / f"de_{tag}_s{session_seed}_test{test_year}"
             prices = prices_dir / f"prices_{test_year}.csv"
+            if SET_YEAR is not None:
+                prices = prices_dir / f"prices_{SET_YEAR}.csv"
             checkpoint = session / "models" / model_weights / f"{args.model}.zip"
             for eval_seed in EVAL_SEEDS:
                 out_dir = group_dir / f"s{session_seed}_pr{test_year % 100:02d}_seed{eval_seed}_jobs26"
